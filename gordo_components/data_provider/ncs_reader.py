@@ -8,6 +8,7 @@ from urllib.parse import quote
 import numpy as np
 import pandas as pd
 from azure.datalake.store import core
+import pyarrow.parquet as pq
 
 from gordo_components.data_provider.base import GordoBaseDataProvider
 from gordo_components.dataset.sensor_tag import SensorTag
@@ -36,6 +37,7 @@ class NcsReader(GordoBaseDataProvider):
         "1901-jsv": "/raw/corporate/PI System Operation Johan Sverdrup/sensordata/1901-JSV",
         "1902-jsv": "/raw/corporate/PI System Operation Johan Sverdrup/sensordata/1902-JSV",
         "1903-jsv": "/raw/corporate/PI System Operation Johan Sverdrup/sensordata/1903-JSV",
+        "2000-emj": "/transform/corporate/Aspen MS - IP21 Grane/sensordata/1755-GRA",
     }
 
     def __init__(
@@ -162,9 +164,7 @@ class NcsReader(GordoBaseDataProvider):
 
         for year in years:
             tag_name_encoded = quote(tag.name, safe=" ")
-            file_path = (
-                f"{tag_base_path}/{tag_name_encoded}/{tag_name_encoded}_{year}.csv"
-            )
+            file_path = f"{tag_base_path}/{tag_name_encoded}/2018/{tag_name_encoded}_{year}.parquet"
             logger.info(f"Parsing file {file_path}")
 
             info = adls_file_system_client.info(file_path)
@@ -175,18 +175,14 @@ class NcsReader(GordoBaseDataProvider):
                 return pd.DataFrame()
 
             with adls_file_system_client.open(file_path, "rb") as f:
-                df = pd.read_csv(
-                    f,
-                    sep=";",
-                    header=None,
-                    names=["Sensor", tag.name, "Timestamp", "Status"],
-                    usecols=[tag.name, "Timestamp", "Status"],
-                    dtype={tag.name: np.float32},
-                    parse_dates=["Timestamp"],
-                    date_parser=lambda col: pd.to_datetime(col, utc=True),
-                    index_col="Timestamp",
+                df = (
+                    pd.read_parquet(
+                        f, engine="pyarrow", columns=["Time", "Value", "Status"]
+                    )
+                    .rename(columns={"Time": "Timestamp", "Value": tag.name})
+                    .set_index("Timestamp")
                 )
-
+                df.index = pd.to_datetime(df.index, utc=True)
                 df = df[~df["Status"].isin(remove_status_codes)]
                 all_years.append(df)
                 logger.info(f"Done parsing file {file_path}")
